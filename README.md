@@ -1,149 +1,115 @@
 # Proyecto Trading de Acciones
 
-## Descripción
+## Descripcion
 
-Sistema de recopilación, almacenamiento y visualización de datos de precios semanales de acciones y ETFs del mercado americano, como base para un modelo de trading con lista de seguimiento semanal.
+Sistema de recopilacion, almacenamiento y visualizacion de datos de precios semanales de acciones y ETFs del mercado americano, como base para un modelo de trading con lista de seguimiento semanal.
 
 ---
 
 ## Objetivo
 
-Construir un pipeline de datos que:
-1. Descargue semanalmente precios de acciones y ETFs del mercado americano
-2. Los almacene en una base de datos cloud accesible desde cualquier lugar
-3. Permita aplicar dos niveles de filtros para generar una lista de seguimiento semanal
+Filtrar ~9.000 instrumentos cada semana y generar una watchlist de 4-5 acciones accionables, basada en condiciones de mercado y criterios individuales por instrumento.
 
 ---
 
-## Arquitectura del Sistema
+## Decisiones tomadas (contexto para continuar)
 
-```
-GitHub Actions (cron semanal)
-        ↓
-Python + yfinance (descarga de datos)
-        ↓
-Supabase PostgreSQL (base de datos, gratis)
-        ↓
-Streamlit Community Cloud (interfaz web, gratis)
-```
+### Base de datos
+- Se eligio **MongoDB Atlas (M0 free)** en lugar de Supabase/PostgreSQL
+- Motivos: el usuario ya tenia cuenta, MongoDB no pausa proyectos por inactividad (Supabase pausa tras 7 dias sin actividad, lo que es un problema para un pipeline semanal)
+- Cluster existente del usuario reutilizado (ya tenia M0 con 116 MB usados)
+- Base de datos creada: `trading`
 
----
+### Modelo de datos
+- **No se acumula historial**. Solo se guarda la "foto" de la semana actual (upsert semanal)
+- Esto mantiene el tamano de la base de datos estatico (~5-10 MB total)
 
-## Stack Tecnológico
-
-| Componente         | Tecnología                 | Costo  |
-|--------------------|----------------------------|--------|
-| Fuente de datos    | yfinance                   | Gratis |
-| Lista de tickers   | CSV NASDAQ                 | Gratis |
-| Base de datos      | Supabase (PostgreSQL)      | Gratis |
-| Scheduler          | GitHub Actions (cron)      | Gratis |
-| Interfaz web       | Streamlit Community Cloud  | Gratis |
-| **Total**          |                            | **$0** |
+### Brokers
+- Se agregan dos campos booleanos en `tickers`: `capital_com` y `pepperstone`
+- Indican si el instrumento se puede tradear en cada broker
+- **Capital.com**: actualizacion mensual automatica via su API (el usuario tiene cuenta)
+- **Pepperstone**: actualizacion mensual automatica via web scraping (sin API publica)
+- Ambas actualizaciones son 100% automaticas, sin intervencion manual
 
 ---
 
-## Universo de Instrumentos
+## Stack tecnologico
 
-- Acciones: ~5.000–6.000 tickers (NYSE, NASDAQ, AMEX)
-- ETFs: ~3.000 tickers
-- Total estimado: ~8.000–9.000 instrumentos
-- Fuente de la lista: CSV público de NASDAQ (incluye campo ETF: Y/N)
-- Actualización: semanal (para capturar listings y delistings)
+| Componente | Tecnologia | Costo |
+|---|---|---|
+| Fuente de datos | yfinance + NASDAQ CSV | Gratuito |
+| Base de datos | MongoDB Atlas M0 | Gratuito |
+| Scheduler | GitHub Actions | Gratuito |
+| Interfaz | Streamlit Community Cloud | Gratuito |
 
 ---
 
-## Estructura de la Base de Datos
+## Repositorio de codigo
 
-### Tabla 1: `tickers`
-Universo de instrumentos disponibles.
+El codigo del proyecto esta en: https://github.com/albertomonardes-beep/trading-pipeline
 
-```sql
-CREATE TABLE tickers (
-    symbol        VARCHAR(10) PRIMARY KEY,
-    name          VARCHAR(255),
-    exchange      VARCHAR(20),
-    sector        VARCHAR(100),
-    type          VARCHAR(10),   -- 'stock' o 'etf'
-    is_active     BOOLEAN,
-    listed_date   DATE
-);
+---
+
+## Arquitectura MongoDB
+
+### Coleccion `tickers`
+```json
+{
+  "ticker": "AAPL",
+  "name": "Apple Inc.",
+  "exchange": "NASDAQ",
+  "capital_com": true,
+  "pepperstone": false
+}
 ```
 
-### Tabla 2: `weekly_prices`
-Precios OHLCV semanales ajustados.
-
-```sql
-CREATE TABLE weekly_prices (
-    symbol    VARCHAR(10),
-    date      DATE,
-    open      NUMERIC,
-    high      NUMERIC,
-    low       NUMERIC,
-    close     NUMERIC,
-    volume    BIGINT,
-    adj_close NUMERIC,
-    PRIMARY KEY (symbol, date)
-);
+### Coleccion `weekly_prices`
+Foto semanal OHLCV. Se sobreescribe cada semana.
+```json
+{
+  "ticker": "AAPL",
+  "open": 189.50,
+  "high": 192.30,
+  "low": 187.10,
+  "close": 191.20,
+  "volume": 58000000
+}
 ```
 
-### Tabla 3: `market_data` (por definir)
-Indicadores de mercado para el primer nivel de filtro.
-- Índices principales: SPY, QQQ, IWM
-- Volatilidad: VIX
-- ETFs sectoriales: XLK, XLF, XLE, etc.
-- Métricas de amplitud del mercado
+### Coleccion `market_data`
+Indicadores macro: indices, volatilidad, ETFs de sectores.
 
 ---
 
-## Lógica de Filtrado (dos niveles)
+## Logica de filtrado (2 niveles)
 
-### Primer filtro — Datos de mercado
-Evalúa el contexto macro y sectorial del mercado.
-Define si las condiciones generales son favorables para operar.
+1. **Nivel mercado**: evalua condiciones generales del mercado
+2. **Nivel instrumento**: filtra activos individuales dentro de mercados favorables
 
-### Segundo filtro — Datos de acciones
-Sobre el universo que pasa el primer filtro, aplica criterios por instrumento individual.
-Output: **lista de seguimiento semanal**
+Resultado: watchlist semanal de 4-5 acciones para revisar
 
 ---
 
-## Interfaz Web (Streamlit)
+## Estado del proyecto
 
-Dos vistas principales:
-
-| Vista              | Contenido                                      |
-|--------------------|------------------------------------------------|
-| Pestaña 1: Mercado | Indicadores macro, filtros por sector y fecha  |
-| Pestaña 2: Acciones| OHLCV + métricas, filtrado desde vista 1       |
-
-Sin gráficos. Solo tablas con filtros. Accesible online sin instalar nada.
-
----
-
-## Orden de Implementación
-
-1. Script que descarga y carga la lista de tickers (acciones + ETFs) en Supabase
-2. Script que descarga precios históricos semanales con yfinance
-3. GitHub Action que ejecuta el pipeline cada semana
-4. App Streamlit básica para visualizar y filtrar los datos
+- [x] Repositorio `trading-pipeline` creado en GitHub
+- [x] Dependencias instaladas (yfinance, pymongo, pandas, requests, beautifulsoup4)
+- [x] Conexion a MongoDB Atlas configurada
+- [x] Colecciones creadas (tickers, weekly_prices, market_data)
+- [x] Secreto `MONGODB_URI` guardado en GitHub Actions
+- [ ] Script de carga de tickers desde NASDAQ CSV
+- [ ] Script de descarga de precios semanales
+- [ ] Script de datos de mercado
+- [ ] Filtros de watchlist (criterios por definir)
+- [ ] GitHub Actions scheduler semanal
+- [ ] Interfaz Streamlit
+- [ ] Integracion Capital.com API (mensual)
+- [ ] Integracion Pepperstone scraping (mensual)
 
 ---
 
-## Volumen Estimado
+## Informacion pendiente de definir
 
-- 3.000 tickers × 5 años de historia semanal ≈ 780.000 filas
-- Tamaño estimado en PostgreSQL: ~80–120 MB
-- Entra cómodo en el free tier de Supabase (500 MB)
-
----
-
-## Estado del Proyecto
-
-- [ ] Definir schema final de base de datos
-- [ ] Script de descarga de lista de tickers
-- [ ] Script de descarga de precios históricos
-- [ ] Configurar Supabase
-- [ ] GitHub Action (scheduler semanal)
-- [ ] App Streamlit (interfaz web)
-- [ ] Definir criterios de filtros de mercado
-- [ ] Definir criterios de filtros de acciones
+- Campos especificos que se necesitan para cada activo (OHLCV + que mas?)
+- Campos especificos para market_data
+- Criterios de los 2 niveles de filtrado
